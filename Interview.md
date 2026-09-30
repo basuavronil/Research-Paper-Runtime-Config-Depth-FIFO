@@ -13,20 +13,26 @@ In this architecture, the FIFO's operational scope is broken down into four dist
 
 ---
 
-## 3. How Masking and Pointer Logic Function Across Windows
+## 3. How Masking and Pointer Logic Function Across Windows (Intuitive Breakdown)
 
-To make these windows functional, the architecture relies on two key hardware mechanisms: `gate_mask` and `depth_mask_addr`.
+Think of your FIFO pointer like a digital odometer or a counter with 6 digits (Bits 0 through 5). Normally, it counts all the way from 0 up to 63. Here is how the two key mechanisms work to control it:
 
-### A. Bit-Level Clock-Gating (`gate_mask`)
-* **How it works:** A parameterized `generate` loop creates a per-bit enable mask: `assign gate_mask[gi] = (gi < active_bits);`.
-* **In the Window Context:** 
-  * If operating in Window 8 (`active_bits = 3`), the `gate_mask` evaluates to `6'b000111`. Bits `[5:3]` evaluate to `1'b0`.
-  * During the pointer increment loop (`always @(posedge clk)`), the flip-flop update condition checks `if (gate_mask[i])`.
-* **The Power Win:** Unused upper bits (i >= 3) are given a clock-enable (`CE = 0`) and forced to `0`. During synthesis in **AMD Vivado**, these static zero assignments map directly to clock-enable primitives, entirely eliminating toggle activity on bits `[5:3]` during Window 8 operation.
+### A. `gate_mask` (The "Turn Off Unused Wires" Switch)
+* **The Problem:** Even if you only want to use **8 entries** (which only needs the first 3 bits: Bit 0, Bit 1, and Bit 2), a standard 6-bit counter will still let Bits 3, 4, and 5 flip back and forth randomly as data flows. Every time a wire or flip-flop flips (0 to 1 or 1 to 0), it burns dynamic power.
+* **What `gate_mask` does:** It acts like a bouncer or a power switch. 
+  * When you select **Window 8**, `gate_mask` creates a pattern: `000111`. 
+  * The `1`s tell the lower 3 bits: *"Keep working normally."*
+  * The `0`s tell the upper bits (Bits 3, 4, and 5): *"Freeze! You are not needed right now. Turn off your clock and stay locked at zero."*
+* **The Result:** Because those upper bits are completely frozen and never toggle, they stop wasting electricity, which is why your power drops significantly in shallow modes.
 
-### B. Address Boundary & Rollover (`depth_mask_addr`)
-* **How it works:** Instead of hardcoding a maximum depth wrap point (like 63), the boundary is calculated dynamically: `depth_mask_addr = (6'b111111 >> (6 - active_bits))`.
-* **In the Window Context:** For Window 1 (Depth 8), `depth_mask_addr` resolves to `6'b000111` (decimal `7`). When the write pointer `wr_addr` reaches `7`, the next increment synchronously wraps back to `0` rather than counting up to `63`. This confines the FIFO strictly to the active window.
+---
+
+### B. `depth_mask_addr` (The "Shortened Running Track" Boundary)
+* **The Problem:** If you are running a race on a 63-meter track (Depth 64), but you suddenly want to run a short 8-meter sprint (Depth 8), you need a way to turn around early instead of running all the way to the end.
+* **What `depth_mask_addr` does:** It calculates a temporary **turn-around point** based on your window size.
+  * For Window 8, it sets the limit at `7` (binary `000111`).
+  * As your write pointer counts up (`0, 1, 2, 3, 4, 5, 6, 7`), the moment it hits `7`, `depth_mask_addr` steps in and says: *"Stop! Don't go to 8. Wrap straight back around to 0 right now."*
+* **The Result:** It traps your data safely inside that small 8-entry window (addresses 0 to 7) without letting it spill over into the rest of the 64-entry memory array.
 
 ## 5. Power Comparison & Verification Methodology
 
